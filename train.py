@@ -9,6 +9,8 @@ import sys
 from pathlib import Path
 import argparse
 
+import os
+
 import torch
 
 import torch.optim as optim
@@ -138,6 +140,19 @@ def train(args, cfg, ddp_gpu=-1):
     gen.cuda()
     gen.apply(weights_init(cfg.init))
 
+    if cfg.pretrained and os.path.exists(cfg.pretrained_path):
+        gen.load_state_dict(torch.load(cfg.pretrained_path, map_location='cuda:{}'.format(ddp_gpu)), strict=False)
+        logger.info("Loaded pretrained weights from {}".format(cfg.pretrained_path))
+
+        # Different learning rates for pretrained model
+        g_optim = optim.Adam([
+            {'params': gen.base_parameters(), 'lr': cfg.g_lr * 0.1},
+            {'params': gen.new_parameters(), 'lr': cfg.g_lr}
+        ], lr=cfg.g_lr, betas=cfg.adam_betas)
+    else:
+        g_optim = optim.Adam(gen.parameters(), lr=cfg.g_lr, betas=cfg.adam_betas)
+
+
     d_kwargs = cfg.get("d_args", {})
     disc = disc_builder(cfg.C, trn_dset.n_fonts, trn_dset.n_chars, **d_kwargs)
     disc.cuda()
@@ -147,14 +162,18 @@ def train(args, cfg, ddp_gpu=-1):
     aux_clf.cuda()
     aux_clf.apply(weights_init(cfg.init))
 
-    g_optim = optim.Adam(gen.parameters(), lr=cfg.g_lr, betas=cfg.adam_betas)
     d_optim = optim.Adam(disc.parameters(), lr=cfg.d_lr, betas=cfg.adam_betas)
     ac_optim = optim.Adam(aux_clf.parameters(), lr=cfg.ac_lr, betas=cfg.adam_betas)
 
     st_step = 0
     if cfg.resume:
-        st_step, loss = load_checkpoint(cfg.resume, gen, disc, aux_clf, g_optim, d_optim, ac_optim, cfg.force_resume)
-        logger.info("Resumed checkpoint from {} (Step {}, Loss {:7.3f})".format(cfg.resume, st_step, loss))
+        if os.path.exists(cfg.resume):
+            st_step, loss = load_checkpoint(cfg.resume, gen, disc, aux_clf, g_optim, d_optim, ac_optim, cfg.force_resume)
+            logger.info("Resumed checkpoint from {} (Step {}, Loss {:7.3f})".format(cfg.resume, st_step, loss))
+        else:
+            logger.error(f"Checkpoint file {cfg.resume} not found")
+        
+    
 
     evaluator = Evaluator(writer)
 
